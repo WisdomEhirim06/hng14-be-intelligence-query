@@ -4,7 +4,8 @@ import uuid6
 import sys
 from database import get_connection, init_db
 from datetime import datetime, timezone
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, RealDictCursor
+import httpx
 
 def seed_data():
     # Initialize DB (which now includes column migrations)
@@ -74,5 +75,77 @@ def seed_data():
     finally:
         conn.close()
 
+def fetch_profile_data(name: str):
+    """
+    Calls external APIs to gather information about a name.
+    """
+    import httpx
+    import time
+    
+    # Standard external APIs
+    GENDERIZE_URL = f"https://api.genderize.io?name={name}"
+    AGIFY_URL = f"https://api.agify.io?name={name}"
+    NATIONALize_URL = f"https://api.nationalize.io?name={name}"
+    
+    results = {}
+    
+    with httpx.Client() as client:
+        # Gender
+        resp = client.get(GENDERIZE_URL)
+        if resp.status_code == 200:
+            d = resp.json()
+            results["gender"] = d.get("gender")
+            results["gender_probability"] = d.get("probability")
+            
+        # Age
+        resp = client.get(AGIFY_URL)
+        if resp.status_code == 200:
+            d = resp.json()
+            results["age"] = d.get("age")
+            if results["age"]:
+                if results["age"] < 13: results["age_group"] = "child"
+                elif results["age"] < 20: results["age_group"] = "teenager"
+                elif results["age"] < 65: results["age_group"] = "adult"
+                else: results["age_group"] = "senior"
+        
+        # Nationality
+        resp = client.get(NATIONALize_URL)
+        if resp.status_code == 200:
+            d = resp.json()
+            countries = d.get("country", [])
+            if countries:
+                results["country_id"] = countries[0].get("country_id")
+                results["country_probability"] = countries[0].get("probability")
+                # We could look up country_name here, or leave it for later
+                results["country_name"] = results["country_id"] # Placeholder
+    
+    results["name"] = name
+    return results
+
+def save_profile(data: dict):
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            profile_id = str(uuid6.uuid7())
+            cur.execute("""
+                INSERT INTO profiles (
+                    id, name, gender, gender_probability, age, age_group,
+                    country_id, country_name, country_probability
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """, (
+                profile_id, data.get("name"), data.get("gender"), data.get("gender_probability"),
+                data.get("age"), data.get("age_group"), data.get("country_id"),
+                data.get("country_name"), data.get("country_probability")
+            ))
+            profile = cur.fetchone()
+            conn.commit()
+            return profile
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
-    seed_data()
+    if len(sys.argv) > 1 and sys.argv[1] == "--seed":
+        seed_data()
+    else:
+        print("Usage: python seed.py --seed")
