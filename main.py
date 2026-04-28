@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, Request, Depends
+from fastapi import FastAPI, Query, HTTPException, Request, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
@@ -247,6 +247,7 @@ async def get_profiles(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
+    x_api_version: str = Header(..., alias="X-API-Version"),
     user = Depends(get_current_user)
 ):
     return _get_profiles_data(
@@ -270,6 +271,7 @@ async def search_profiles(
     q: str = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
+    x_api_version: str = Header(..., alias="X-API-Version"),
     user = Depends(get_current_user)
 ):
     if not q:
@@ -297,6 +299,7 @@ async def search_profiles(
 async def create_profile(
     request: Request,
     body: dict,
+    x_api_version: str = Header(..., alias="X-API-Version"),
     user = Depends(check_admin)
 ):
     name = body.get("name")
@@ -323,6 +326,7 @@ async def export_profiles(
     country_id: Optional[str] = None,
     sort_by: str = Query("created_at"),
     order: str = Query("desc"),
+    x_api_version: str = Header(..., alias="X-API-Version"),
     user = Depends(get_current_user)
 ):
     # Fetch data (no limit for export?)
