@@ -3,7 +3,7 @@ import datetime
 from typing import Optional
 from jose import JWTError, jwt
 from fastapi import HTTPException, status, Depends
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer
 import httpx
 from database import get_connection
 import uuid6
@@ -22,7 +22,7 @@ GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/github/callback")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/refresh")
+oauth2_scheme = HTTPBearer()
 
 class Token(BaseModel):
     access_token: str
@@ -60,8 +60,8 @@ def verify_token(token: str):
     except JWTError:
         return None
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    payload = verify_token(token)
+async def get_current_user(token = Depends(oauth2_scheme)):
+    payload = verify_token(token.credentials)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -144,33 +144,7 @@ async def logout(request: Request):
         await logout_user(refresh_token)
     return {"status": "success", "message": "Logged out"}
 
-@app.get("/api/profiles")
-async def get_profiles(
-    gender: Optional[str] = None,
-    age_group: Optional[str] = None,
-    country_id: Optional[str] = None,
-    min_age: Optional[int] = None,
-    max_age: Optional[int] = None,
-    min_gender_probability: Optional[float] = None,
-    min_country_probability: Optional[float] = None,
-    sort_by: str = Query("created_at", pattern="^(age|created_at|gender_probability)$"),
-    order: str = Query("desc", pattern="^(asc|desc)$"),
-    page: int = Query(1, ge=1),
-    limit: int = Query(10, ge=1, le=50)
-):
-    return _get_profiles_data(
-        gender=gender,
-        age_group=age_group,
-        country_id=country_id,
-        min_age=min_age,
-        max_age=max_age,
-        min_gender_probability=min_gender_probability,
-        min_country_probability=min_country_probability,
-        sort_by=sort_by,
-        order=order,
-        page=page,
-        limit=limit
-    )
+
 
 def _get_profiles_data(
     gender: Optional[str] = None,
