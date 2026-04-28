@@ -117,16 +117,29 @@ async def github_exchange(request: Request):
 
 @app.get("/auth/github/callback")
 async def github_callback(code: str, state: Optional[str] = None):
-    # This handles both Web and CLI if CLI uses this callback.
-    # But TRD says CLI sends code+verifier to backend.
     user = await exchange_github_code(code)
     access_token = create_access_token(data={"sub": user["id"]})
     refresh_token = create_refresh_token(user["id"])
-    
+
+    # CLI PKCE flow: state starts with "cli:" — redirect back to local server with tokens
+    if state and state.startswith("cli:"):
+        from urllib.parse import urlencode
+        params = urlencode({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "username": user["username"],
+            "role": user["role"],
+            "state": state,
+        })
+        return RedirectResponse(f"http://localhost:8080/callback?{params}")
+
+    # Web flow: return JSON
     return {
         "status": "success",
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "username": user["username"],
+        "role": user["role"]
     }
 
 @app.post("/auth/refresh", response_model=Token)
