@@ -329,13 +329,6 @@ async def create_profile(
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     
-    # Import logic from Stage 1/2 generator if available
-    # For now, I'll implement a mock fetch or assume it's already there
-    # Wait, "Calls external APIs (Stage 1 logic)"
-    # I should check if there's a script for Stage 1. 
-    # I see check_schema.py, seed.py, parser.py. 
-    # I'll check seed.py to see how it collects data.
-    
     try:
         from seed import fetch_profile_data, save_profile
         data = fetch_profile_data(name)
@@ -366,7 +359,7 @@ async def export_profiles(
         sort_by=sort_by,
         order=order,
         page=1,
-        limit=1000 # Large limit for export
+        limit=1000 # Large limit for the export
     )
     profiles = data_resp["data"]
     
