@@ -296,33 +296,6 @@ async def get_profiles(
         limit=limit
     )
 
-@app.get("/api/profiles/{profile_id}")
-@limiter.limit("60/minute")
-async def get_profile(
-    profile_id: str,
-    x_api_version: str = Header(..., alias="X-API-Version"),
-    user = Depends(get_current_user)
-):
-    try:
-        conn = get_connection()
-        from psycopg2.extras import RealDictCursor
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM profiles WHERE id = %s", (profile_id,))
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Profile not found")
-            return {
-                "status": "success",
-                "data": format_profile(row)
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
 @app.get("/api/profiles/search")
 @limiter.limit("60/minute")
 async def search_profiles(
@@ -418,6 +391,37 @@ async def export_profiles(
         media_type="text/csv",
         headers=headers
     )
+
+# NOTE: This route must be LAST among /api/profiles/* routes
+# so that /search and /export are matched first by FastAPI
+@app.get("/api/profiles/{profile_id}")
+@limiter.limit("60/minute")
+async def get_profile(
+    request: Request,
+    profile_id: str,
+    x_api_version: str = Header(..., alias="X-API-Version"),
+    user = Depends(get_current_user)
+):
+    try:
+        conn = get_connection()
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM profiles WHERE id = %s", (profile_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Profile not found")
+            return {
+                "status": "success",
+                "data": format_profile(row)
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
 
 @app.get("/health")
 def health_check():
