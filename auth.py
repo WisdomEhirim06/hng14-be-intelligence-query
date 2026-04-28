@@ -92,14 +92,14 @@ def check_admin(user = Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 
-async def exchange_github_code(code: str, code_verifier: Optional[str] = None):
+async def exchange_github_code(code: str, code_verifier: Optional[str] = None, redirect_uri: Optional[str] = None):
     async with httpx.AsyncClient() as client:
         # Step 1: Exchange code for GitHub access token
         payload = {
             "client_id": GITHUB_CLIENT_ID,
             "client_secret": GITHUB_CLIENT_SECRET,
             "code": code,
-            "redirect_uri": GITHUB_REDIRECT_URI
+            "redirect_uri": redirect_uri or GITHUB_REDIRECT_URI
         }
         if code_verifier:
             payload["code_verifier"] = code_verifier

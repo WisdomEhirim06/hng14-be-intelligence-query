@@ -99,17 +99,20 @@ async def github_exchange(request: Request):
     body = await request.json()
     code = body.get("code")
     code_verifier = body.get("code_verifier")
+    redirect_uri = body.get("redirect_uri")
     if not code:
         raise HTTPException(status_code=400, detail="Missing code")
     
-    user = await exchange_github_code(code, code_verifier)
+    user = await exchange_github_code(code, code_verifier, redirect_uri)
     access_token = create_access_token(data={"sub": user["id"]})
     refresh_token = create_refresh_token(user["id"])
     
     return {
         "status": "success",
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "username": user["username"],
+        "role": user["role"]
     }
 
 @app.get("/auth/github/callback")
@@ -279,6 +282,33 @@ async def get_profiles(
         page=page,
         limit=limit
     )
+
+@app.get("/api/profiles/{profile_id}")
+@limiter.limit("60/minute")
+async def get_profile(
+    profile_id: str,
+    x_api_version: str = Header(..., alias="X-API-Version"),
+    user = Depends(get_current_user)
+):
+    try:
+        conn = get_connection()
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM profiles WHERE id = %s", (profile_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Profile not found")
+            return {
+                "status": "success",
+                "data": format_profile(row)
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 @app.get("/api/profiles/search")
 @limiter.limit("60/minute")
