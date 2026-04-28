@@ -207,11 +207,27 @@ def _get_profiles_data(
 
             total_pages = (total + limit - 1) // limit
             
+            # Build query string for links
+            query_params = []
+            if gender: query_params.append(f"gender={gender}")
+            if age_group: query_params.append(f"age_group={age_group}")
+            if country_id: query_params.append(f"country_id={country_id}")
+            if min_age is not None: query_params.append(f"min_age={min_age}")
+            if max_age is not None: query_params.append(f"max_age={max_age}")
+            if min_gender_probability is not None: query_params.append(f"min_gender_probability={min_gender_probability}")
+            if min_country_probability is not None: query_params.append(f"min_country_probability={min_country_probability}")
+            if sort_by: query_params.append(f"sort_by={sort_by}")
+            if order: query_params.append(f"order={order}")
+            
+            base_query = "&".join(query_params)
+            if base_query:
+                base_query = "&" + base_query
+
             # Links
             path = "/api/profiles"
-            self_link = f"{path}?page={page}&limit={limit}"
-            next_link = f"{path}?page={page+1}&limit={limit}" if page < total_pages else None
-            prev_link = f"{path}?page={page-1}&limit={limit}" if page > 1 else None
+            self_link = f"{path}?page={page}&limit={limit}{base_query}"
+            next_link = f"{path}?page={page+1}&limit={limit}{base_query}" if page < total_pages else None
+            prev_link = f"{path}?page={page-1}&limit={limit}{base_query}" if page > 1 else None
 
             return {
                 "status": "success",
