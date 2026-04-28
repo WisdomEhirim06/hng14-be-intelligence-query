@@ -8,7 +8,7 @@ from parser import parse_query
 from auth import (
     create_access_token, create_refresh_token, get_current_user, 
     check_admin, exchange_github_code, refresh_access_token, logout_user,
-    Token
+    Token, GITHUB_REDIRECT_URI
 )
 from fastapi.responses import RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -84,7 +84,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @limiter.limit("10/minute")
 async def github_login(request: Request):
     client_id = os.getenv("GITHUB_CLIENT_ID")
-    redirect_uri = os.getenv("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/github/callback")
+    redirect_uri = GITHUB_REDIRECT_URI
     scope = "user:email"
     # For PKCE challenge, web can also use it or just standard flow.
     # The TRD says CLI flow uses PKCE. 
