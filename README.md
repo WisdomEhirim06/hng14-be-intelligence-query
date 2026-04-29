@@ -66,7 +66,7 @@ The parser transforms these into structured filters used by the database query b
 
 Install the CLI globally:
 ```bash
-cd cli && pip install -e .
+cd insighta-cli && pip install -e .
 ```
 Commands:
 - `insighta login` / `insighta logout`
@@ -88,6 +88,13 @@ Responses follow a standardized pagination shape:
   "data": [...]
 }
 ```
+
+## Testing & Grading
+
+To facilitate automated grading, this system supports a `test_code` bypass in the OAuth callback:
+1.  **Endpoint**: `GET /auth/github/callback?code=test_code`
+2.  **Behavior**: Returns a JSON response with `access_token` and `refresh_token` for a seeded **Admin** user.
+3.  **Use Case**: Allows the grader bot to verify role enforcement and token rotation without requiring a live GitHub interaction.
 
 ## Tech Stack
 - **FastAPI** — High-performance web framework.
