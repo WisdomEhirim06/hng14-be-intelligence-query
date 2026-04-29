@@ -85,12 +85,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def github_login(request: Request):
     client_id = os.getenv("GITHUB_CLIENT_ID")
     redirect_uri = GITHUB_REDIRECT_URI
-    scope = "user:email"
-    # For PKCE challenge, web can also use it or just standard flow.
-    # The TRD says CLI flow uses PKCE. 
-    # For now, let's provide a simple redirect.
+    scope = "read:user user:email"
+    # Redirect to GitHub — no custom redirect_uri so GitHub uses the registered Vercel URL
     return RedirectResponse(
-        f"https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}"
+        f"https://github.com/login/oauth/authorize?client_id={client_id}&scope={scope}"
     )
 
 @app.post("/auth/github/exchange")

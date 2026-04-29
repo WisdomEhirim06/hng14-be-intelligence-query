@@ -107,25 +107,52 @@ async def exchange_github_code(code: str, code_verifier: Optional[str] = None, r
             payload["redirect_uri"] = redirect_uri
         if code_verifier:
             payload["code_verifier"] = code_verifier
-            
+
         resp = await client.post(
             "https://github.com/login/oauth/access_token",
-            headers={"Accept": "application/json"},
-            data=payload
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Insighta-Labs-Plus/1.0",
+            },
+            data=payload,
         )
         data = resp.json()
         if "error" in data:
-            raise HTTPException(status_code=400, detail=data.get("error_description", "OAuth error"))
-        
-        github_token = data["access_token"]
-        
-        # Step 2: Get user info
+            raise HTTPException(
+                status_code=400,
+                detail=f"GitHub OAuth error: {data.get('error_description', data.get('error', 'Unknown error'))}"
+            )
+
+        github_token = data.get("access_token")
+        if not github_token:
+            raise HTTPException(status_code=400, detail="GitHub did not return an access token")
+
+        # Step 2: Get user info — GitHub requires User-Agent on all API requests
         user_resp = await client.get(
             "https://api.github.com/user",
-            headers={"Authorization": f"token {github_token}"}
+            headers={
+                "Authorization": f"token {github_token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "Insighta-Labs-Plus/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
         )
+
+        if user_resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to fetch GitHub user info: {user_resp.status_code} - {user_resp.text}"
+            )
+
         user_data = user_resp.json()
-        
+
+        # Validate expected fields exist
+        if "id" not in user_data or "login" not in user_data:
+            raise HTTPException(
+                status_code=502,
+                detail=f"GitHub user data missing required fields. Got: {list(user_data.keys())}"
+            )
+
         # Step 3: Create or update user in DB
         return await sync_user_to_db(user_data)
 
