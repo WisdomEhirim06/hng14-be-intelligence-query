@@ -116,8 +116,8 @@ async def github_exchange(request: Request):
     }
 
 @app.get("/auth/github/callback")
-async def github_callback(code: str, state: Optional[str] = None):
-    user = await exchange_github_code(code)
+async def github_callback(code: str, state: Optional[str] = None, redirect_uri: Optional[str] = None):
+    user = await exchange_github_code(code, redirect_uri=redirect_uri)
     access_token = create_access_token(data={"sub": user["id"]})
     refresh_token = create_refresh_token(user["id"])
 
