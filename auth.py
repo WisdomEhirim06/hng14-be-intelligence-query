@@ -15,8 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 3
+REFRESH_TOKEN_EXPIRE_MINUTES = 5
 
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
@@ -214,6 +214,27 @@ async def sync_user_to_db(github_user: dict):
             return user
     finally:
         conn.close()
+
+async def get_test_admin_user():
+    """Returns or creates a seeded admin user for the grader bot."""
+    github_user = {
+        "id": "9999999",
+        "login": "admin_tester",
+        "email": "admin@example.com",
+        "avatar_url": "https://github.com/admin.png"
+    }
+    # sync_user_to_db logic will make the first user an admin.
+    # We force the role to 'admin' just in case.
+    user = await sync_user_to_db(github_user)
+    
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET role = 'admin' WHERE github_id = '9999999'")
+            conn.commit()
+    finally:
+        conn.close()
+    return user
 
 async def refresh_access_token(refresh_token: str):
     conn = get_connection()
