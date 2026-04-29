@@ -93,16 +93,24 @@ def check_admin(user = Depends(get_current_user)):
     return user
 
 async def exchange_github_code(code: str, code_verifier: Optional[str] = None, redirect_uri: Optional[str] = None):
+    import asyncio
+
+    github_headers = {
+        "Authorization": "",  # filled in after token exchange
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Insighta-Labs-Plus/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
     async with httpx.AsyncClient() as client:
         # Step 1: Exchange code for GitHub access token
         # IMPORTANT: redirect_uri in the exchange MUST match what was sent in the auth URL.
-        # If no redirect_uri was sent to GitHub (using the registered default), don't include it here.
+        # If no redirect_uri was sent to GitHub, don't include it here.
         payload = {
             "client_id": GITHUB_CLIENT_ID,
             "client_secret": GITHUB_CLIENT_SECRET,
             "code": code,
         }
-        # Only add redirect_uri if explicitly provided (e.g. from a POST body)
         if redirect_uri:
             payload["redirect_uri"] = redirect_uri
         if code_verifier:
@@ -127,30 +135,40 @@ async def exchange_github_code(code: str, code_verifier: Optional[str] = None, r
         if not github_token:
             raise HTTPException(status_code=400, detail="GitHub did not return an access token")
 
-        # Step 2: Get user info — GitHub requires User-Agent on all API requests
-        user_resp = await client.get(
-            "https://api.github.com/user",
-            headers={
-                "Authorization": f"token {github_token}",
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "Insighta-Labs-Plus/1.0",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
+        # Step 2: Get user info with retry on rate limit
+        github_headers["Authorization"] = f"token {github_token}"
 
-        if user_resp.status_code != 200:
+        user_data = None
+        for attempt in range(3):
+            user_resp = await client.get("https://api.github.com/user", headers=github_headers)
+
+            if user_resp.status_code == 200:
+                user_data = user_resp.json()
+                break
+            elif user_resp.status_code in (429, 403):
+                # Rate limited — check Retry-After header
+                retry_after = int(user_resp.headers.get("Retry-After", 2 ** attempt))
+                if attempt < 2:
+                    await asyncio.sleep(min(retry_after, 5))  # wait up to 5s then retry
+                    continue
+                # All retries exhausted
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "GitHub API rate limit exceeded. Please wait a moment and try again. "
+                        f"Details: {user_resp.json().get('message', 'Rate limited')}"
+                    )
+                )
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to fetch GitHub user info: {user_resp.status_code} - {user_resp.text}"
+                )
+
+        if not user_data or "id" not in user_data or "login" not in user_data:
             raise HTTPException(
                 status_code=502,
-                detail=f"Failed to fetch GitHub user info: {user_resp.status_code} - {user_resp.text}"
-            )
-
-        user_data = user_resp.json()
-
-        # Validate expected fields exist
-        if "id" not in user_data or "login" not in user_data:
-            raise HTTPException(
-                status_code=502,
-                detail=f"GitHub user data missing required fields. Got: {list(user_data.keys())}"
+                detail=f"GitHub user data missing required fields. Got: {list(user_data.keys()) if user_data else 'none'}"
             )
 
         # Step 3: Create or update user in DB
