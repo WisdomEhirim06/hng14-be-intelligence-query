@@ -95,12 +95,16 @@ def check_admin(user = Depends(get_current_user)):
 async def exchange_github_code(code: str, code_verifier: Optional[str] = None, redirect_uri: Optional[str] = None):
     async with httpx.AsyncClient() as client:
         # Step 1: Exchange code for GitHub access token
+        # IMPORTANT: redirect_uri in the exchange MUST match what was sent in the auth URL.
+        # If no redirect_uri was sent to GitHub (using the registered default), don't include it here.
         payload = {
             "client_id": GITHUB_CLIENT_ID,
             "client_secret": GITHUB_CLIENT_SECRET,
             "code": code,
-            "redirect_uri": redirect_uri or GITHUB_REDIRECT_URI
         }
+        # Only add redirect_uri if explicitly provided (e.g. from a POST body)
+        if redirect_uri:
+            payload["redirect_uri"] = redirect_uri
         if code_verifier:
             payload["code_verifier"] = code_verifier
             

@@ -116,24 +116,35 @@ async def github_exchange(request: Request):
     }
 
 @app.get("/auth/github/callback")
-async def github_callback(code: str, state: Optional[str] = None, redirect_uri: Optional[str] = None):
-    user = await exchange_github_code(code, redirect_uri=redirect_uri)
-    access_token = create_access_token(data={"sub": user["id"]})
-    refresh_token = create_refresh_token(user["id"])
+async def github_callback(code: str, state: Optional[str] = None):
+    # No redirect_uri passed — uses the registered Vercel callback URL by default
+    user = await exchange_github_code(code)
+    access_token = create_access_token(data={"sub": str(user["id"])})
+    refresh_token = create_refresh_token(str(user["id"]))
 
-    # CLI PKCE flow: state starts with "cli:" — redirect back to local server with tokens
+    from urllib.parse import urlencode
+
+    token_params = urlencode({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "username": user["username"],
+        "role": user["role"],
+        "state": state or "",
+    })
+
+    # CLI flow: state starts with "cli:" → redirect to local callback server
     if state and state.startswith("cli:"):
-        from urllib.parse import urlencode
-        params = urlencode({
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "username": user["username"],
-            "role": user["role"],
-            "state": state,
-        })
-        return RedirectResponse(f"http://localhost:8080/callback?{params}")
+        return RedirectResponse(f"http://localhost:8080/callback?{token_params}")
 
-    # Web flow: return JSON
+    # Web portal flow: state starts with "web:<encoded_callback_url>:" → redirect to portal
+    if state and state.startswith("web:"):
+        # Format: "web:<callback_url>:<random_nonce>"
+        parts = state.split(":", 2)  # ["web", "<callback_url>", "<nonce>"]
+        if len(parts) >= 2:
+            web_callback = parts[1]
+            return RedirectResponse(f"{web_callback}?{token_params}")
+
+    # Default: return JSON (direct API use)
     return {
         "status": "success",
         "access_token": access_token,
