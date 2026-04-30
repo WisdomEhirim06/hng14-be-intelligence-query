@@ -89,7 +89,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 # --- Auth Endpoints ---
 
 @app.get("/auth/github")
-@limiter.limit("60/minute") # Increased for bot testing
+@limiter.limit("10/minute") # Restored to TRD requirement
 async def github_login(request: Request, state: Optional[str] = "web"):
     client_id = os.getenv("GITHUB_CLIENT_ID")
     scope = "read:user user:email"
@@ -175,7 +175,7 @@ async def github_callback(code: str = None, state: Optional[str] = None):
     }
 
 @app.post("/auth/refresh")
-@limiter.limit("60/minute")
+@limiter.limit("10/minute")
 async def refresh_token_rotation(request: Request):
     try:
         body = await request.json()
@@ -326,7 +326,7 @@ def _get_profiles_data(
             conn.close()
 
 @app.get("/api/profiles")
-@limiter.limit("60/minute")
+@limiter.limit("10/minute")
 async def get_profiles(
     request: Request, # for limiter
     gender: Optional[str] = None,
@@ -358,7 +358,7 @@ async def get_profiles(
     )
 
 @app.get("/api/profiles/search")
-@limiter.limit("60/minute")
+@limiter.limit("10/minute")
 async def search_profiles(
     request: Request,
     q: str = Query(None),
@@ -387,8 +387,8 @@ async def search_profiles(
         limit=limit
     )
 
-@app.post("/api/profiles")
-@limiter.limit("60/minute")
+@app.post("/api/profiles", status_code=201)
+@limiter.limit("10/minute")
 async def create_profile(
     request: Request,
     body: dict,
@@ -399,19 +399,32 @@ async def create_profile(
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     
+    # Check if exists first to return 409
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM profiles WHERE name = %s", (name,))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail=f"Profile with name '{name}' already exists")
+    finally:
+        conn.close()
+
     try:
         from seed import fetch_profile_data, save_profile
+        # This calls external APIs to enrich data (gender, age, etc)
         data = fetch_profile_data(name)
         profile = save_profile(data)
         return {
             "status": "success",
             "data": format_profile(profile)
         }
+    except HTTPException as e:
+        raise e
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/profiles/export")
-@limiter.limit("60/minute")
+@limiter.limit("10/minute")
 async def export_profiles(
     request: Request,
     format: str = Query(..., pattern="^csv$"),
