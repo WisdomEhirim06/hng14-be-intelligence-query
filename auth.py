@@ -262,6 +262,7 @@ async def refresh_access_token(refresh_token: str):
             
             conn.commit()
             return {
+                "status": "success",
                 "access_token": new_access_token,
                 "refresh_token": new_refresh_token,
                 "token_type": "bearer"
