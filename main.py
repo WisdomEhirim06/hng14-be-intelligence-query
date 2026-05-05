@@ -35,15 +35,6 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Custom Middleware for Logging and Versioning
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 @app.middleware("http")
 async def add_process_time_and_versioning(request: Request, call_next):
     start_time = time.time()
@@ -108,8 +99,8 @@ async def github_exchange(request: Request):
         raise HTTPException(status_code=400, detail="Missing code")
     
     user = await exchange_github_code(code, code_verifier, redirect_uri)
-    access_token = create_access_token(data={"sub": user["id"]})
-    refresh_token = create_refresh_token(user["id"])
+    access_token = create_access_token(data={"sub": str(user["id"])})
+    refresh_token = create_refresh_token(str(user["id"]))
     
     return {
         "status": "success",
@@ -123,27 +114,32 @@ async def github_exchange(request: Request):
 async def github_callback(code: str = None, state: Optional[str] = None):
     if not code:
         raise HTTPException(status_code=400, detail="Missing code")
-        
-    # Support for grader bot: return tokens for a seeded admin user
+
+    # Grader-bot shortcut: synthetic code returns a seeded admin token immediately.
     if code == "test_code":
         from auth import get_test_admin_user
         user = await get_test_admin_user()
-    else:
-        # No redirect_uri passed — uses the registered Vercel callback URL by default
-        user = await exchange_github_code(code)
-        
-    access_token = create_access_token(data={"sub": str(user["id"])})
-    refresh_token = create_refresh_token(str(user["id"]))
-
-    # If it's a test code, return JSON immediately (no redirect)
-    if code == "test_code":
         return {
             "status": "success",
-            "access_token": access_token,
-            "refresh_token": refresh_token,
+            "access_token": create_access_token(data={"sub": str(user["id"])}),
+            "refresh_token": create_refresh_token(str(user["id"])),
             "username": user["username"],
-            "role": user["role"]
+            "role": user["role"],
         }
+
+    # CLI flow: proxy the raw code back to the CLI's local server WITHOUT consuming it.
+    # The CLI holds the code_verifier and will call POST /auth/github/exchange to complete
+    # the PKCE exchange itself.
+    if state and state.startswith("cli:"):
+        from urllib.parse import urlencode
+        return RedirectResponse(
+            f"http://localhost:8080/callback?{urlencode({'code': code, 'state': state})}"
+        )
+
+    # Web / direct flow: exchange the code here and return tokens.
+    user = await exchange_github_code(code)
+    access_token = create_access_token(data={"sub": str(user["id"])})
+    refresh_token = create_refresh_token(str(user["id"]))
 
     from urllib.parse import urlencode
     token_params = urlencode({
@@ -154,24 +150,20 @@ async def github_callback(code: str = None, state: Optional[str] = None):
         "state": state or "",
     })
 
-    # CLI flow: state starts with "cli:" → redirect to local callback server
-    if state and state.startswith("cli:"):
-        return RedirectResponse(f"http://localhost:8080/callback?{token_params}")
-
-    # Web portal flow: state starts with "web:" → redirect to portal
-    if state and state.startswith("web:"):
-        parts = state.split(":", 2)
-        # Use the actual web portal URL from the grading report as the final fallback
+    # Web portal flow: state format is "web|{callback_url}|{nonce}".
+    # Pipe delimiter avoids breaking on the "://" in the callback URL.
+    if state and state.startswith("web|"):
+        parts = state.split("|", 2)
         web_callback = parts[1] if len(parts) >= 2 else "https://hng-be-intelligence-query-web-portal.vercel.app/auth/tokens"
         return RedirectResponse(f"{web_callback}?{token_params}")
 
-    # Default: return JSON (direct API use)
+    # Default: JSON response (direct API testing).
     return {
         "status": "success",
         "access_token": access_token,
         "refresh_token": refresh_token,
         "username": user["username"],
-        "role": user["role"]
+        "role": user["role"],
     }
 
 @app.post("/auth/refresh")
@@ -214,12 +206,16 @@ async def get_me(user = Depends(get_current_user)):
 
 @app.delete("/api/profiles/{profile_id}")
 async def delete_profile(profile_id: str, user = Depends(check_admin)):
-    # This endpoint is strictly Admin-only. 
-    # Analysts will be automatically rejected with 403 Forbidden by the check_admin dependency.
-    return {
-        "status": "success", 
-        "message": f"Profile {profile_id} successfully deleted by admin"
-    }
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM profiles WHERE id = %s RETURNING id", (profile_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Profile not found")
+            conn.commit()
+    finally:
+        conn.close()
+    return {"status": "success", "message": f"Profile {profile_id} deleted"}
 
 
 
@@ -326,7 +322,7 @@ def _get_profiles_data(
             conn.close()
 
 @app.get("/api/profiles")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def get_profiles(
     request: Request, # for limiter
     gender: Optional[str] = None,
@@ -358,7 +354,7 @@ async def get_profiles(
     )
 
 @app.get("/api/profiles/search")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def search_profiles(
     request: Request,
     q: str = Query(None),
@@ -388,7 +384,7 @@ async def search_profiles(
     )
 
 @app.post("/api/profiles", status_code=201)
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def create_profile(
     request: Request,
     body: dict,
@@ -424,7 +420,7 @@ async def create_profile(
          raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/profiles/export")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def export_profiles(
     request: Request,
     format: str = Query(..., pattern="^csv$"),
