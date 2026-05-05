@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Insighta Labs Intelligence Query Engine")
-WEB_PORTAL_URL = os.getenv("WEB_PORTAL_URL", "https://hng-be-intelligence-query-web-portal.vercel.app")
+WEB_PORTAL_URL = os.getenv("WEB_PORTAL_URL", "https://hng-be-insighta-labs-web-portal.vercel.app")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
