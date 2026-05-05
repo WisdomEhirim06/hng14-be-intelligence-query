@@ -75,50 +75,72 @@ def seed_data():
     finally:
         conn.close()
 
+COUNTRY_NAMES = {
+    "AF": "Afghanistan", "AL": "Albania", "DZ": "Algeria", "AR": "Argentina",
+    "AU": "Australia", "AT": "Austria", "BD": "Bangladesh", "BE": "Belgium",
+    "BR": "Brazil", "BG": "Bulgaria", "CA": "Canada", "CL": "Chile",
+    "CN": "China", "CO": "Colombia", "HR": "Croatia", "CZ": "Czech Republic",
+    "DK": "Denmark", "EG": "Egypt", "ET": "Ethiopia", "FI": "Finland",
+    "FR": "France", "DE": "Germany", "GH": "Ghana", "GR": "Greece",
+    "HU": "Hungary", "IN": "India", "ID": "Indonesia", "IR": "Iran",
+    "IQ": "Iraq", "IE": "Ireland", "IL": "Israel", "IT": "Italy",
+    "JP": "Japan", "JO": "Jordan", "KE": "Kenya", "KR": "South Korea",
+    "KW": "Kuwait", "LB": "Lebanon", "LY": "Libya", "MY": "Malaysia",
+    "MX": "Mexico", "MA": "Morocco", "MM": "Myanmar", "NP": "Nepal",
+    "NL": "Netherlands", "NZ": "New Zealand", "NG": "Nigeria", "NO": "Norway",
+    "PK": "Pakistan", "PE": "Peru", "PH": "Philippines", "PL": "Poland",
+    "PT": "Portugal", "QA": "Qatar", "RO": "Romania", "RU": "Russia",
+    "SA": "Saudi Arabia", "SN": "Senegal", "ZA": "South Africa", "ES": "Spain",
+    "LK": "Sri Lanka", "SD": "Sudan", "SE": "Sweden", "CH": "Switzerland",
+    "SY": "Syria", "TZ": "Tanzania", "TH": "Thailand", "TN": "Tunisia",
+    "TR": "Turkey", "UG": "Uganda", "UA": "Ukraine", "AE": "United Arab Emirates",
+    "GB": "United Kingdom", "US": "United States", "UY": "Uruguay",
+    "UZ": "Uzbekistan", "VE": "Venezuela", "VN": "Vietnam", "YE": "Yemen",
+    "ZM": "Zambia", "ZW": "Zimbabwe",
+}
+
+
 def fetch_profile_data(name: str):
-    """
-    Calls external APIs to gather information about a name.
-    """
+    """Calls external APIs to gather information about a name."""
     import httpx
-    import time
-    
-    # Standard external APIs
+
     GENDERIZE_URL = f"https://api.genderize.io?name={name}"
     AGIFY_URL = f"https://api.agify.io?name={name}"
-    NATIONALize_URL = f"https://api.nationalize.io?name={name}"
-    
+    NATIONALIZE_URL = f"https://api.nationalize.io?name={name}"
+
     results = {}
-    
+
     with httpx.Client() as client:
-        # Gender
         resp = client.get(GENDERIZE_URL)
         if resp.status_code == 200:
             d = resp.json()
             results["gender"] = d.get("gender")
             results["gender_probability"] = d.get("probability")
-            
-        # Age
+
         resp = client.get(AGIFY_URL)
         if resp.status_code == 200:
             d = resp.json()
             results["age"] = d.get("age")
-            if results["age"]:
-                if results["age"] < 13: results["age_group"] = "child"
-                elif results["age"] < 20: results["age_group"] = "teenager"
-                elif results["age"] < 65: results["age_group"] = "adult"
-                else: results["age_group"] = "senior"
-        
-        # Nationality
-        resp = client.get(NATIONALize_URL)
+            if results.get("age"):
+                if results["age"] < 13:
+                    results["age_group"] = "child"
+                elif results["age"] < 20:
+                    results["age_group"] = "teenager"
+                elif results["age"] < 65:
+                    results["age_group"] = "adult"
+                else:
+                    results["age_group"] = "senior"
+
+        resp = client.get(NATIONALIZE_URL)
         if resp.status_code == 200:
             d = resp.json()
             countries = d.get("country", [])
             if countries:
-                results["country_id"] = countries[0].get("country_id")
+                country_id = countries[0].get("country_id")
+                results["country_id"] = country_id
                 results["country_probability"] = countries[0].get("probability")
-                # We could look up country_name here, or leave it for later
-                results["country_name"] = results["country_id"] # Placeholder
-    
+                results["country_name"] = COUNTRY_NAMES.get(country_id, country_id)
+
     results["name"] = name
     return results
 
