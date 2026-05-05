@@ -79,36 +79,31 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 # --- Auth Endpoints ---
 
-# Web portal callback destination (set in Vercel env vars)
-WEB_PORTAL_URL = os.getenv(
-    "WEB_PORTAL_URL",
-    "https://hng-be-intelligence-query-web-portal.vercel.app"
-)
-
 @app.get("/auth/github")
 @limiter.limit("10/minute")
 async def github_login(request: Request, state: Optional[str] = None):
-    """Initiate GitHub OAuth.
+    """Initiate GitHub OAuth for CLI flows.
 
-    The web portal hits this endpoint directly; the CLI may also use it.
-    State format:
-      - 'cli:{nonce}' for CLI flows (backend proxies code back to localhost)
-      - 'web:{nonce}' or None for web/browser flows (backend returns tokens to portal)
+    The CLI passes state='cli:{nonce}&code_challenge=...'. The web portal
+    now handles its own OAuth callback directly and does not use this endpoint.
     """
     import secrets as _secrets
     client_id = os.getenv("GITHUB_CLIENT_ID")
-    scope = "read:user user:email"
-    effective_state = state if state else f"web:{_secrets.token_urlsafe(16)}"
+    effective_state = state if state else _secrets.token_urlsafe(16)
     url = (
         f"https://github.com/login/oauth/authorize"
-        f"?client_id={client_id}&scope={scope}&state={effective_state}"
+        f"?client_id={client_id}&scope=read:user+user:email&state={effective_state}"
     )
     return RedirectResponse(url)
 
 @app.post("/auth/github/exchange")
 @limiter.limit("10/minute")
 async def github_exchange(request: Request):
-    """CLI PKCE exchange: receives code + code_verifier, returns tokens."""
+    """Exchange a GitHub OAuth code for tokens.
+
+    Used by both the CLI (sends code_verifier for PKCE) and the web portal
+    (sends code only — no code_verifier needed for server-side web flows).
+    """
     body = await request.json()
     code = body.get("code")
     code_verifier = body.get("code_verifier")
@@ -126,46 +121,31 @@ async def github_exchange(request: Request):
 
 @app.get("/auth/github/callback")
 async def github_callback(code: str = None, state: Optional[str] = None):
-    """GitHub redirects here after the user authorises the app.
+    """GitHub redirects here for CLI flows only.
 
-    CLI flow  (state='cli:...'): proxy the raw code back to the CLI's
-    localhost server so the CLI can do the PKCE exchange itself.
+    The registered callback URL for this backend handles CLI authentication.
+    The web portal has its own registered callback URL and handles its own flow.
 
-    Web / direct flow: exchange code, build tokens, redirect the browser
-    to the web portal or return JSON for direct API callers.
+    CLI flow: proxy the raw code back to the CLI's local server so the CLI
+    can complete the PKCE exchange via POST /auth/github/exchange.
+    Direct/API flow: exchange code and return JSON tokens.
     """
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
 
-    # CLI: proxy code back without consuming it so CLI does the PKCE exchange.
+    # CLI: return code to the local server; CLI does the PKCE exchange itself.
     if state and state.startswith("cli:"):
         from urllib.parse import urlencode
         return RedirectResponse(
             f"http://localhost:8080/callback?{urlencode({'code': code, 'state': state})}"
         )
 
-    # Web / direct: exchange the code and build tokens.
+    # Direct API use (e.g. curl, Postman): exchange and return JSON.
     user = await exchange_github_code(code)
-    access_token = create_access_token(data={"sub": str(user["id"])})
-    refresh_token = create_refresh_token(str(user["id"]))
-
-    from urllib.parse import urlencode
-    token_params = urlencode({
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "username": user["username"],
-        "role": user["role"],
-    })
-
-    # Web portal: redirect tokens to the portal's /auth/tokens endpoint.
-    if state and state.startswith("web:"):
-        return RedirectResponse(f"{WEB_PORTAL_URL}/auth/tokens?{token_params}")
-
-    # Default (direct API / curl): return JSON.
     return {
         "status": "success",
-        "access_token": access_token,
-        "refresh_token": refresh_token,
+        "access_token": create_access_token(data={"sub": str(user["id"])}),
+        "refresh_token": create_refresh_token(str(user["id"])),
         "username": user["username"],
         "role": user["role"],
     }
