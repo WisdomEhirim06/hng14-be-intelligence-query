@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Insighta Labs Intelligence Query Engine")
+WEB_PORTAL_URL = os.getenv("WEB_PORTAL_URL", "https://hng-be-intelligence-query-web-portal.vercel.app")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -82,14 +83,14 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.get("/auth/github")
 @limiter.limit("10/minute")
 async def github_login(request: Request, state: Optional[str] = None):
-    """Initiate GitHub OAuth for CLI flows.
+    """Initiate GitHub OAuth. Web portal and CLI both use this endpoint.
 
-    The CLI passes state='cli:{nonce}&code_challenge=...'. The web portal
-    now handles its own OAuth callback directly and does not use this endpoint.
+    CLI passes state='cli:{nonce}'. Web portal hits this without a state param
+    and gets a 'web:{nonce}' state assigned automatically.
     """
     import secrets as _secrets
     client_id = os.getenv("GITHUB_CLIENT_ID")
-    effective_state = state if state else _secrets.token_urlsafe(16)
+    effective_state = state if state else f"web:{_secrets.token_urlsafe(16)}"
     url = (
         f"https://github.com/login/oauth/authorize"
         f"?client_id={client_id}&scope=read:user+user:email&state={effective_state}"
@@ -121,14 +122,11 @@ async def github_exchange(request: Request):
 
 @app.get("/auth/github/callback")
 async def github_callback(code: str = None, state: Optional[str] = None):
-    """GitHub redirects here for CLI flows only.
+    """GitHub redirects here after OAuth. Routes by state prefix.
 
-    The registered callback URL for this backend handles CLI authentication.
-    The web portal has its own registered callback URL and handles its own flow.
-
-    CLI flow: proxy the raw code back to the CLI's local server so the CLI
-    can complete the PKCE exchange via POST /auth/github/exchange.
-    Direct/API flow: exchange code and return JSON tokens.
+    - cli:{nonce}  → proxy raw code to CLI local server for PKCE exchange
+    - web:{nonce}  → exchange code, redirect tokens to web portal /auth/tokens
+    - no prefix    → exchange code, return JSON (direct API use)
     """
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
@@ -140,12 +138,26 @@ async def github_callback(code: str = None, state: Optional[str] = None):
             f"http://localhost:8080/callback?{urlencode({'code': code, 'state': state})}"
         )
 
-    # Direct API use (e.g. curl, Postman): exchange and return JSON.
+    # Web portal: exchange code and redirect tokens to the portal.
     user = await exchange_github_code(code)
+    access_token = create_access_token(data={"sub": str(user["id"])})
+    refresh_token = create_refresh_token(str(user["id"]))
+
+    if state and state.startswith("web:"):
+        from urllib.parse import urlencode
+        params = urlencode({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "username": user["username"],
+            "role": user["role"],
+        })
+        return RedirectResponse(f"{WEB_PORTAL_URL}/auth/tokens?{params}")
+
+    # Direct API use (e.g. curl, Postman): return JSON.
     return {
         "status": "success",
-        "access_token": create_access_token(data={"sub": str(user["id"])}),
-        "refresh_token": create_refresh_token(str(user["id"])),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
         "username": user["username"],
         "role": user["role"],
     }
