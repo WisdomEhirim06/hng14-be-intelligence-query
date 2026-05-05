@@ -79,64 +79,72 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 # --- Auth Endpoints ---
 
+# Web portal callback destination (set in Vercel env vars)
+WEB_PORTAL_URL = os.getenv(
+    "WEB_PORTAL_URL",
+    "https://hng-be-intelligence-query-web-portal.vercel.app"
+)
+
 @app.get("/auth/github")
-@limiter.limit("10/minute") # Restored to TRD requirement
-async def github_login(request: Request, state: Optional[str] = "web"):
+@limiter.limit("10/minute")
+async def github_login(request: Request, state: Optional[str] = None):
+    """Initiate GitHub OAuth.
+
+    The web portal hits this endpoint directly; the CLI may also use it.
+    State format:
+      - 'cli:{nonce}' for CLI flows (backend proxies code back to localhost)
+      - 'web:{nonce}' or None for web/browser flows (backend returns tokens to portal)
+    """
+    import secrets as _secrets
     client_id = os.getenv("GITHUB_CLIENT_ID")
     scope = "read:user user:email"
-    # Ensure state is present and redirect is clean
-    url = f"https://github.com/login/oauth/authorize?client_id={client_id}&scope={scope}&state={state}&response_type=code"
+    effective_state = state if state else f"web:{_secrets.token_urlsafe(16)}"
+    url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={client_id}&scope={scope}&state={effective_state}"
+    )
     return RedirectResponse(url)
 
 @app.post("/auth/github/exchange")
+@limiter.limit("10/minute")
 async def github_exchange(request: Request):
-    # For CLI: takes code and code_verifier
+    """CLI PKCE exchange: receives code + code_verifier, returns tokens."""
     body = await request.json()
     code = body.get("code")
     code_verifier = body.get("code_verifier")
-    redirect_uri = body.get("redirect_uri")
     if not code:
         raise HTTPException(status_code=400, detail="Missing code")
-    
-    user = await exchange_github_code(code, code_verifier, redirect_uri)
-    access_token = create_access_token(data={"sub": str(user["id"])})
-    refresh_token = create_refresh_token(str(user["id"]))
-    
+
+    user = await exchange_github_code(code, code_verifier)
     return {
         "status": "success",
-        "access_token": access_token,
-        "refresh_token": refresh_token,
+        "access_token": create_access_token(data={"sub": str(user["id"])}),
+        "refresh_token": create_refresh_token(str(user["id"])),
         "username": user["username"],
-        "role": user["role"]
+        "role": user["role"],
     }
 
 @app.get("/auth/github/callback")
 async def github_callback(code: str = None, state: Optional[str] = None):
+    """GitHub redirects here after the user authorises the app.
+
+    CLI flow  (state='cli:...'): proxy the raw code back to the CLI's
+    localhost server so the CLI can do the PKCE exchange itself.
+
+    Web / direct flow: exchange code, build tokens, redirect the browser
+    to the web portal or return JSON for direct API callers.
+    """
     if not code:
-        raise HTTPException(status_code=400, detail="Missing code")
+        raise HTTPException(status_code=400, detail="Missing authorization code")
 
-    # Grader-bot shortcut: synthetic code returns a seeded admin token immediately.
-    if code == "test_code":
-        from auth import get_test_admin_user
-        user = await get_test_admin_user()
-        return {
-            "status": "success",
-            "access_token": create_access_token(data={"sub": str(user["id"])}),
-            "refresh_token": create_refresh_token(str(user["id"])),
-            "username": user["username"],
-            "role": user["role"],
-        }
-
-    # CLI flow: proxy the raw code back to the CLI's local server WITHOUT consuming it.
-    # The CLI holds the code_verifier and will call POST /auth/github/exchange to complete
-    # the PKCE exchange itself.
+    # CLI: proxy code back without consuming it so CLI does the PKCE exchange.
     if state and state.startswith("cli:"):
         from urllib.parse import urlencode
         return RedirectResponse(
             f"http://localhost:8080/callback?{urlencode({'code': code, 'state': state})}"
         )
 
-    # Web / direct flow: exchange the code here and return tokens.
+    # Web / direct: exchange the code and build tokens.
     user = await exchange_github_code(code)
     access_token = create_access_token(data={"sub": str(user["id"])})
     refresh_token = create_refresh_token(str(user["id"]))
@@ -147,17 +155,13 @@ async def github_callback(code: str = None, state: Optional[str] = None):
         "refresh_token": refresh_token,
         "username": user["username"],
         "role": user["role"],
-        "state": state or "",
     })
 
-    # Web portal flow: state format is "web|{callback_url}|{nonce}".
-    # Pipe delimiter avoids breaking on the "://" in the callback URL.
-    if state and state.startswith("web|"):
-        parts = state.split("|", 2)
-        web_callback = parts[1] if len(parts) >= 2 else "https://hng-be-intelligence-query-web-portal.vercel.app/auth/tokens"
-        return RedirectResponse(f"{web_callback}?{token_params}")
+    # Web portal: redirect tokens to the portal's /auth/tokens endpoint.
+    if state and state.startswith("web:"):
+        return RedirectResponse(f"{WEB_PORTAL_URL}/auth/tokens?{token_params}")
 
-    # Default: JSON response (direct API testing).
+    # Default (direct API / curl): return JSON.
     return {
         "status": "success",
         "access_token": access_token,
