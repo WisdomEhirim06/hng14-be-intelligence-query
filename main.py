@@ -121,7 +121,8 @@ async def github_exchange(request: Request):
     }
 
 @app.get("/auth/github/callback")
-async def github_callback(code: str = None, state: Optional[str] = None):
+@limiter.limit("10/minute")
+async def github_callback(request: Request, code: str = None, state: Optional[str] = None):
     """GitHub redirects here after OAuth. Routes by state prefix.
 
     - cli:{nonce}  → proxy raw code to CLI local server for PKCE exchange
@@ -177,6 +178,7 @@ async def refresh_token_rotation(request: Request):
     return await refresh_access_token(refresh_token)
 
 @app.post("/auth/logout")
+@limiter.limit("10/minute")
 async def logout(request: Request):
     try:
         body = await request.json()
