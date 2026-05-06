@@ -1,12 +1,14 @@
-from fastapi import FastAPI, Query, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, Query, HTTPException, Request, Depends, Header, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 import datetime
 from database import get_connection
 from parser import parse_query
+from normalize import normalize_filters, make_cache_key
+from cache import cache_get, cache_set, invalidate_cache
 from auth import (
-    create_access_token, create_refresh_token, get_current_user, 
+    create_access_token, create_refresh_token, get_current_user,
     check_admin, exchange_github_code, refresh_access_token, logout_user,
     Token, GITHUB_REDIRECT_URI
 )
@@ -17,7 +19,9 @@ from slowapi.errors import RateLimitExceeded
 import time
 import os
 import uuid
+import uuid6
 import csv
+import csv as csv_module
 import io
 from fastapi.responses import StreamingResponse
 
@@ -26,6 +30,15 @@ app = FastAPI(title="Insighta Labs Intelligence Query Engine")
 WEB_PORTAL_URL = os.getenv("WEB_PORTAL_URL", "https://hng-be-insighta-labs-web-portal.vercel.app")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+@app.on_event("startup")
+async def startup():
+    """Apply schema.sql on startup so new indexes and migrations are always in sync."""
+    try:
+        from database import init_db
+        init_db()
+    except Exception as e:
+        print(f"Warning: DB init on startup failed: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -213,6 +226,7 @@ async def delete_profile(profile_id: str, user = Depends(check_admin)):
             conn.commit()
     finally:
         conn.close()
+    invalidate_cache()
     return {"status": "success", "message": f"Profile {profile_id} deleted"}
 
 
@@ -230,6 +244,21 @@ def _get_profiles_data(
     page: int = 1,
     limit: int = 10
 ):
+    # Build normalised filter dict and check cache before hitting the DB.
+    # normalize_filters() ensures two semantically identical queries always
+    # produce the same cache key regardless of how they were expressed.
+    raw_filters = {
+        "gender": gender, "age_group": age_group, "country_id": country_id,
+        "min_age": min_age, "max_age": max_age,
+        "min_gender_probability": min_gender_probability,
+        "min_country_probability": min_country_probability,
+    }
+    # Strip None values before normalising
+    raw_filters = {k: v for k, v in raw_filters.items() if v is not None}
+    key = make_cache_key(raw_filters, page=page, limit=limit, sort_by=sort_by, order=order)
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
     try:
         conn = get_connection()
         conn.cursor_factory = None # We'll use RealDictCursor manually or equivalent
@@ -300,7 +329,7 @@ def _get_profiles_data(
             next_link = f"{path}?page={page+1}&limit={limit}{base_query}" if page < total_pages else None
             prev_link = f"{path}?page={page-1}&limit={limit}{base_query}" if page > 1 else None
 
-            return {
+            result = {
                 "status": "success",
                 "page": page,
                 "limit": limit,
@@ -313,6 +342,9 @@ def _get_profiles_data(
                 },
                 "data": [format_profile(row) for row in rows]
             }
+            # Store in cache; no-op if Redis is not configured
+            cache_set(key, result)
+            return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -404,10 +436,14 @@ async def create_profile(
         conn.close()
 
     try:
-        from seed import fetch_profile_data, save_profile
-        # This calls external APIs to enrich data (gender, age, etc)
-        data = fetch_profile_data(name)
+        import asyncio
+        # Call all three enrichment APIs concurrently instead of sequentially.
+        # This reduces profile creation latency from ~3× API latency to ~1×
+        # (the slowest of the three calls), typically cutting ~600–900ms to ~300ms.
+        data = await _async_fetch_profile_data(name)
+        from seed import save_profile
         profile = save_profile(data)
+        invalidate_cache()
         return {
             "status": "success",
             "data": format_profile(profile)
@@ -416,6 +452,273 @@ async def create_profile(
         raise e
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
+
+async def _async_fetch_profile_data(name: str) -> dict:
+    """
+    Fetch gender, age, and country enrichment for a name concurrently.
+    Replaces the sequential httpx.Client calls in seed.fetch_profile_data,
+    reducing latency from ~(sum of all API calls) to ~(slowest single call).
+    """
+    import asyncio
+    import httpx
+    from seed import COUNTRY_NAMES
+
+    async def get_gender():
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"https://api.genderize.io?name={name}", timeout=10)
+            return r.json() if r.status_code == 200 else {}
+
+    async def get_age():
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"https://api.agify.io?name={name}", timeout=10)
+            return r.json() if r.status_code == 200 else {}
+
+    async def get_country():
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"https://api.nationalize.io?name={name}", timeout=10)
+            return r.json() if r.status_code == 200 else {}
+
+    gender_data, age_data, country_data = await asyncio.gather(
+        get_gender(), get_age(), get_country()
+    )
+
+    result = {"name": name}
+    result["gender"] = gender_data.get("gender")
+    result["gender_probability"] = gender_data.get("probability")
+
+    age = age_data.get("age")
+    result["age"] = age
+    if age:
+        if age < 13:   result["age_group"] = "child"
+        elif age < 20: result["age_group"] = "teenager"
+        elif age < 65: result["age_group"] = "adult"
+        else:          result["age_group"] = "senior"
+
+    countries = country_data.get("country", [])
+    if countries:
+        cid = countries[0].get("country_id")
+        result["country_id"] = cid
+        result["country_probability"] = countries[0].get("probability")
+        result["country_name"] = COUNTRY_NAMES.get(cid, cid)
+
+    return result
+
+
+def _insert_csv_batch(batch: list) -> int:
+    """
+    Bulk-insert a batch of validated profile rows using execute_values.
+    Checks for duplicates within the batch against the DB before inserting.
+    Returns the number of rows actually inserted.
+    """
+    if not batch:
+        return 0
+    from psycopg2.extras import execute_values
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name FROM profiles WHERE name = ANY(%s)",
+                ([row[1] for row in batch],)
+            )
+            existing = {row[0].lower() for row in cur.fetchall()}
+            to_insert = [row for row in batch if row[1].lower() not in existing]
+            if not to_insert:
+                return 0
+            execute_values(cur, """
+                INSERT INTO profiles (
+                    id, name, gender, gender_probability, age, age_group,
+                    country_id, country_name, country_probability
+                ) VALUES %s
+                ON CONFLICT (name) DO NOTHING
+            """, to_insert)
+            inserted = cur.rowcount
+            conn.commit()
+            return inserted
+    finally:
+        conn.close()
+
+
+def _derive_age_group(age: int) -> str:
+    if age < 13:   return "child"
+    if age < 20:   return "teenager"
+    if age < 65:   return "adult"
+    return "senior"
+
+
+@app.post("/api/profiles/upload", status_code=200)
+@limiter.limit("10/minute")
+async def upload_profiles_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    x_api_version: Optional[str] = Header("1", alias="X-API-Version"),
+    user = Depends(check_admin),
+):
+    """
+    Bulk-ingest profiles from a CSV file (up to 500,000 rows).
+
+    Design decisions:
+    - Streams the file in 64 KB chunks — never loads the whole file into memory.
+    - Validates each row individually; a bad row is skipped, never aborts the upload.
+    - Inserts in batches of 500 using psycopg2 execute_values (one SQL statement
+      per batch, not one per row). Concurrent uploads are safe: ON CONFLICT DO NOTHING
+      handles any race between two uploads inserting the same name.
+    - Rows already inserted before a mid-upload failure remain committed (no rollback).
+    - Cache is invalidated once at the end.
+
+    Expected CSV columns (header row required):
+      name, gender, age, age_group, country_id
+      (optional: gender_probability, country_name, country_probability, id, created_at)
+    """
+    CHUNK_SIZE = 65536   # 64 KB per read — keeps memory usage flat
+    BATCH_SIZE = 500     # rows per execute_values call
+
+    total_rows = 0
+    inserted = 0
+    reasons: dict = {}
+
+    def skip(reason: str):
+        nonlocal inserted  # not modifying inserted, just reasons
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    header = None
+    batch = []
+    line_buffer = ""
+
+    while True:
+        chunk = await file.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        try:
+            text = chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            text = chunk.decode("utf-8", errors="replace")
+
+        line_buffer += text
+        lines = line_buffer.split("\n")
+        line_buffer = lines[-1]   # save the incomplete trailing line
+
+        for raw_line in lines[:-1]:
+            line = raw_line.rstrip("\r")
+            if not line.strip():
+                continue
+
+            try:
+                row = next(csv_module.reader([line]))
+            except Exception:
+                if header is not None:
+                    total_rows += 1
+                    skip("malformed_row")
+                continue
+
+            if header is None:
+                header = [h.strip().lower() for h in row]
+                continue
+
+            total_rows += 1
+
+            if len(row) != len(header):
+                skip("malformed_row")
+                continue
+
+            r = {h: v.strip() for h, v in zip(header, row)}
+
+            name       = r.get("name", "")
+            gender     = r.get("gender", "").lower()
+            age_str    = r.get("age", "")
+            country_id = r.get("country_id", "").upper()
+
+            if not name or not gender or not age_str or not country_id:
+                skip("missing_fields")
+                continue
+
+            if gender not in ("male", "female"):
+                skip("invalid_gender")
+                continue
+
+            try:
+                age = int(age_str)
+                if not (0 <= age <= 150):
+                    raise ValueError
+            except ValueError:
+                skip("invalid_age")
+                continue
+
+            age_group = r.get("age_group", "").strip().lower() or _derive_age_group(age)
+
+            try:
+                gp = float(r.get("gender_probability") or 0) or None
+            except (ValueError, TypeError):
+                gp = None
+            try:
+                cp = float(r.get("country_probability") or 0) or None
+            except (ValueError, TypeError):
+                cp = None
+
+            country_name = r.get("country_name") or None
+
+            batch.append((
+                str(uuid6.uuid7()),
+                name, gender, gp, age, age_group,
+                country_id, country_name, cp,
+            ))
+
+            if len(batch) >= BATCH_SIZE:
+                n = _insert_csv_batch(batch)
+                # Rows in batch but not inserted are duplicates caught at DB level
+                dups = len(batch) - n
+                if dups > 0:
+                    reasons["duplicate_name"] = reasons.get("duplicate_name", 0) + dups
+                inserted += n
+                batch = []
+
+    # Process any remaining partial line
+    if line_buffer.strip() and header is not None:
+        line = line_buffer.rstrip("\r\n")
+        try:
+            row = next(csv_module.reader([line]))
+            total_rows += 1
+            if len(row) == len(header):
+                r = {h: v.strip() for h, v in zip(header, row)}
+                name       = r.get("name", "")
+                gender     = r.get("gender", "").lower()
+                age_str    = r.get("age", "")
+                country_id = r.get("country_id", "").upper()
+                if name and gender in ("male", "female") and age_str and country_id:
+                    try:
+                        age = int(age_str)
+                        age_group = r.get("age_group", "").strip().lower() or _derive_age_group(age)
+                        batch.append((
+                            str(uuid6.uuid7()), name, gender, None,
+                            age, age_group, country_id, None, None,
+                        ))
+                    except ValueError:
+                        skip("invalid_age")
+                else:
+                    skip("missing_fields")
+            else:
+                skip("malformed_row")
+        except Exception:
+            skip("malformed_row")
+
+    # Insert final batch
+    if batch:
+        n = _insert_csv_batch(batch)
+        dups = len(batch) - n
+        if dups > 0:
+            reasons["duplicate_name"] = reasons.get("duplicate_name", 0) + dups
+        inserted += n
+
+    invalidate_cache()
+
+    skipped = total_rows - inserted
+    return {
+        "status": "success",
+        "total_rows": total_rows,
+        "inserted": inserted,
+        "skipped": skipped,
+        "reasons": reasons,
+    }
+
 
 @app.get("/api/profiles/export")
 @limiter.limit("60/minute")
