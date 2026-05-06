@@ -11,11 +11,20 @@ CREATE TABLE IF NOT EXISTS profiles (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexing for performance
+-- Individual indexes for single-column filter queries
 CREATE INDEX IF NOT EXISTS idx_gender ON profiles(gender);
 CREATE INDEX IF NOT EXISTS idx_age_group ON profiles(age_group);
 CREATE INDEX IF NOT EXISTS idx_country_id ON profiles(country_id);
 CREATE INDEX IF NOT EXISTS idx_age ON profiles(age);
+
+-- Composite index for combined filter queries (gender + age_group + country_id).
+-- When all three filters are used together, PostgreSQL uses this single index
+-- instead of combining three separate scans, cutting query time significantly
+-- as the table grows into tens of millions of rows.
+CREATE INDEX IF NOT EXISTS idx_profiles_composite ON profiles(gender, age_group, country_id);
+
+-- Descending index on created_at to speed up default sort (ORDER BY created_at DESC)
+CREATE INDEX IF NOT EXISTS idx_profiles_created_at ON profiles(created_at DESC);
 
 -- Users table for Auth & RBAC
 CREATE TABLE IF NOT EXISTS users (
