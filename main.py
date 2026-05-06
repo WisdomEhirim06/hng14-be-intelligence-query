@@ -577,7 +577,6 @@ async def upload_profiles_csv(
     reasons: dict = {}
 
     def skip(reason: str):
-        nonlocal inserted  # not modifying inserted, just reasons
         reasons[reason] = reasons.get(reason, 0) + 1
 
     header = None
