@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Query, HTTPException, Request, Depends, Header, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from typing import Optional, List
 import datetime
 from database import get_connection
@@ -413,15 +414,23 @@ async def search_profiles(
         limit=limit
     )
 
+class CreateProfileBody(BaseModel):
+    name: str
+
+    model_config = {
+        "json_schema_extra": {"example": {"name": "Harriet Tubman"}}
+    }
+
+
 @app.post("/api/profiles", status_code=201)
 @limiter.limit("60/minute")
 async def create_profile(
     request: Request,
-    body: dict,
+    body: CreateProfileBody,
     x_api_version: Optional[str] = Header("1", alias="X-API-Version"),
     user = Depends(check_admin)
 ):
-    name = body.get("name")
+    name = body.name
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     
